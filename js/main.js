@@ -112,7 +112,7 @@ async function refreshBackdrop() {
 }
 
 const mirror = new Reflector(new THREE.CircleGeometry(2.6, 48), {
-  textureWidth: 1024, textureHeight: 1024, color: 0x3a3644,
+  textureWidth: 1024, textureHeight: 1024, color: 0x4c4658,
 });
 mirror.rotation.x = -Math.PI / 2;
 scene.add(mirror);
@@ -127,7 +127,7 @@ emblem.position.y = 0.005;
 scene.add(emblem);
 const catcher = new THREE.Mesh(
   new THREE.CircleGeometry(2.6, 48),
-  new THREE.ShadowMaterial({ opacity: 0.38 }));
+  new THREE.ShadowMaterial({ opacity: 0.32 }));
 catcher.rotation.x = -Math.PI / 2;
 catcher.position.y = 0.01;
 catcher.receiveShadow = true;
@@ -210,6 +210,52 @@ function updateViewOffset() {
   else camera.clearViewOffset();
 }
 updateViewOffset();
+
+// ---------------- grounding: per-foot contact shadow blobs -----------------
+const contactBlobs = {};
+{
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g2 = c.getContext('2d');
+  const rg = g2.createRadialGradient(64, 64, 6, 64, 64, 64);
+  rg.addColorStop(0.0, 'rgba(8,5,12,0.62)');
+  rg.addColorStop(0.4, 'rgba(8,5,12,0.34)');
+  rg.addColorStop(1.0, 'rgba(8,5,12,0)');
+  g2.fillStyle = rg;
+  g2.fillRect(0, 0, 128, 128);
+  const blobTex = new THREE.CanvasTexture(c);
+  for (const side of ['left', 'right']) {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.20, 0.34), // 鞋印椭圆
+      new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, opacity: 0.42 }));
+    m.rotation.order = 'YXZ';
+    m.renderOrder = 3;
+    m.visible = false;
+    scene.add(m);
+    contactBlobs[side] = m;
+  }
+}
+const _blobW = new THREE.Vector3();
+function updateContactBlobs() {
+  if (!vrm || !legIK.ready || vrm.scene.parent !== charGroup) {
+    contactBlobs.left.visible = contactBlobs.right.visible = false;
+    return;
+  }
+  for (const side of ['left', 'right']) {
+    const blob = contactBlobs[side];
+    const foot = legIK[side].foot;
+    foot.updateWorldMatrix(true, false);
+    foot.getWorldPosition(_blobW);
+    const lift = Math.max(0, _blobW.y - legIK.ankleRestY);
+    const fade = Math.max(0, 1 - lift / 0.22);
+    blob.material.opacity = 0.42 * fade * fade;
+    blob.visible = blob.material.opacity > 0.01;
+    const s = 1 + lift * 1.8;
+    blob.scale.set(s, s, 1);
+    blob.position.set(_blobW.x + Math.sin(rotY) * 0.05, 0.012, _blobW.z + Math.cos(rotY) * 0.05);
+    blob.rotation.set(-Math.PI / 2, rotY, 0);
+  }
+}
 
 // ------------------------------------------------------- the light rig ----
 const key = new THREE.DirectionalLight('#ffb27a', 2.2);
@@ -330,8 +376,12 @@ async function loadChar(id) {
     }
   });
   const hipsNode = vrm.humanoid.getNormalizedBoneNode('hips');
-  hipsRest = hipsNode ? hipsNode.position.clone() : null;
-  if (vrm.lookAt) vrm.lookAt.target = camera;
+  // rest 每模型只测一次 — 缓存模型的 hips.position 带着上一帧 idle 的 sink,
+  // 直接重取会导致来回换装单调下沉 (验证工作流实测: 4 个来回沉 3cm)
+  if (hipsNode && !vrm.scene.userData.hipsRest) vrm.scene.userData.hipsRest = hipsNode.position.clone();
+  hipsRest = hipsNode ? vrm.scene.userData.hipsRest.clone() : null;
+  setupLegIK(); // 每个模型腿长不同, 换装重新量
+  if (vrm.lookAt) { vrm.lookAt.target = gazeTarget; gazeTarget.position.copy(camera.position); }
   charGroup.add(vrm.scene);
   forceInstant = true;
   animateVRM(0.001, 0.016); // pose + expression land fully on frame one
@@ -346,7 +396,7 @@ async function loadChar(id) {
       headNode.getWorldPosition(wp);
       const headY = wp.y + 0.06; // eye line sits slightly above the bone
       frameFace = headY;
-      frameBody = headY * 0.63;
+      frameBody = headY * 0.60;
     }
   }
   for (const g of ['hair', 'eyes', 'cloth']) if (dyes[g]) applyDye(g);
@@ -357,12 +407,22 @@ async function loadChar(id) {
 }
 
 // ----------------------------------------------------- pose + idle life ---
-const POSE_BONES = ['hips', 'spine', 'chest', 'neck', 'head',
+const POSE_BONES = ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head',
+  'leftShoulder', 'rightShoulder',
   'leftUpperArm', 'leftLowerArm', 'leftHand', 'rightUpperArm', 'rightLowerArm', 'rightHand'];
 const POSES = {
-  relax: { label: '自然', leftUpperArm: [0, 0, 1.13], rightUpperArm: [0, 0, -1.13], leftLowerArm: [0, 0, 0.14], rightLowerArm: [0, 0, -0.14] },
-  greet: { label: '打招呼', leftUpperArm: [0, 0, 1.13], rightUpperArm: [0.1, -0.5, -2.2], rightLowerArm: [-0.4, -0.6, -0.5], rightHand: [0, 0, -0.3], head: [0, 0, 0.10], spine: [0, 0, 0.05] },
-  elegant: { label: '优雅', leftUpperArm: [0.42, 0.35, 1.02], rightUpperArm: [0.42, -0.35, -1.02], leftLowerArm: [0, 1.15, 0.55], rightLowerArm: [0, -1.15, -0.55], head: [0.06, 0, 0], spine: [-0.03, 0, 0] },
+  relax: {
+    label: '自然',
+    // 去对称化: 右臂略前略松, 左臂略后略贴身, 肩高差, 头 2° 左倾微右转
+    leftUpperArm: [-0.03, 0, 1.16], rightUpperArm: [0.06, 0, -1.08],
+    leftLowerArm: [0.05, 0, 0.13], rightLowerArm: [0.11, 0, -0.20],
+    leftHand: [0.04, 0, 0.06], rightHand: [0.07, 0, -0.10],
+    leftShoulder: [0, 0, 0.018], rightShoulder: [0, 0, 0.012],
+    spine: [0.01, 0.03, -0.008], chest: [0.008, 0.02, 0],
+    neck: [-0.01, -0.02, -0.012], head: [-0.015, -0.045, 0.035],
+  },
+  greet: { label: '打招呼', fingers: [1, 0.25], leftUpperArm: [-0.03, 0, 1.16], rightUpperArm: [0.15, 0, 0.35], rightLowerArm: [0, 0, 1.85], rightHand: [0, 0, 0.25], head: [0, 0, 0.10], spine: [0, 0, 0.05] },
+  elegant: { label: '优雅', fingers: [1.1, 1.1], leftUpperArm: [0.42, 0.35, 1.02], rightUpperArm: [0.42, -0.35, -1.02], leftLowerArm: [0, 1.15, 0.55], rightLowerArm: [0, -1.15, -0.55], head: [0.06, 0, 0], spine: [-0.03, 0, 0] },
   lookback: { label: '回眸', spine: [0, 0.34, 0], chest: [0, 0.24, 0], neck: [0, 0.30, 0], head: [0.04, 0.22, 0], leftUpperArm: [0, 0, 1.13], rightUpperArm: [0, 0, -1.13] },
 };
 // occasional personality gestures layered over the idle (Genshin characters
@@ -374,21 +434,289 @@ const GESTURES = [
 ];
 const GESTURE_NOTICE = { head: [0.16, 0, 0.05], neck: [0.05, 0, 0], chest: [0.03, 0, 0] };
 let gesture = null, gesturePhase = 0, gestureT = 6;
-let poseName = 'relax';
+let poseName = (q.get('pose') && POSES[q.get('pose')]) ? q.get('pose') : 'relax';
 const poseCurrent = {};
 for (const b of POSE_BONES) poseCurrent[b] = new THREE.Euler();
 function setPose(name) { if (POSES[name]) poseName = name; ui.sync?.(); }
 
+// ================= grounding: two-bone leg IK (feet pinned to floor) =========
+// 轴向为实测: rotateVRM0 后 normalized rig 局部系相对世界 yaw 翻转 —
+// 屈髋 = upperLeg.rotation.x 正 / 屈膝 = lowerLeg.rotation.x 负。rest 腿链非共线,
+// 用 rest 几何闭式解, 实测 50mm 下沉时踝钉位误差 < 0.0001。
+const legIK = { ready: false };
+const _ikV0 = new THREE.Vector3(), _ikV1 = new THREE.Vector3(), _ikV2 = new THREE.Vector3();
+const _ikQ0 = new THREE.Quaternion(), _ikQ2 = new THREE.Quaternion();
+const IK_X = new THREE.Vector3(1, 0, 0);
+
+function setupLegIK() {
+  legIK.ready = false;
+  if (!vrm || !hipsRest) return;
+  const h = vrm.humanoid;
+  for (const side of ['left', 'right']) {
+    const upper = h.getNormalizedBoneNode(side + 'UpperLeg');
+    const lower = h.getNormalizedBoneNode(side + 'LowerLeg');
+    const foot = h.getNormalizedBoneNode(side + 'Foot');
+    if (!upper || !lower || !foot) return; // 缺骨骼的模型不启用
+    const pU = upper.position.clone();
+    const a = lower.position.clone();
+    const b = foot.position.clone();
+    const ankleRest = hipsRest.clone().add(pU).add(a).add(b);
+    const C = a.y * b.y + a.z * b.z;
+    const Sx = a.z * b.y - a.y * b.z;
+    legIK[side] = {
+      upper, lower, foot, pU, a, b, ankleRest,
+      a2: a.lengthSq(), b2: b.lengthSq(), axbx: a.x * b.x,
+      hyp: Math.hypot(C, Sx), phi0: Math.atan2(Sx, C),
+      restD: a.clone().add(b).length(),
+    };
+    if (legIK[side].hyp < 1e-6) return; // 退化腿链 (纯X向) 无解, 不启用
+  }
+  legIK.ankleRestY = legIK.left.ankleRest.y;
+  legIK.ready = true;
+}
+
+function solveLeg(S, hipsNode) {
+  _ikQ0.copy(hipsNode.quaternion).invert();
+  _ikV0.copy(S.pU).applyQuaternion(hipsNode.quaternion).add(hipsNode.position);
+  _ikV1.copy(S.ankleRest).sub(_ikV0).applyQuaternion(_ikQ0);
+  const D = Math.min(_ikV1.length(), S.restD * 0.9999); // 永不过伸
+  const K = (D * D - S.a2 - S.b2) / 2;
+  const cosArg = THREE.MathUtils.clamp((K - S.axbx) / S.hyp, -1, 1);
+  const delta = S.phi0 - Math.acos(cosArg); // 负分支 = 屈膝 (实测)
+  S.lower.quaternion.setFromAxisAngle(IK_X, delta);
+  _ikV2.copy(S.b).applyQuaternion(S.lower.quaternion).add(S.a).normalize();
+  S.upper.quaternion.setFromUnitVectors(_ikV2, _ikV1.normalize());
+  // 脚: 恢复 rest 世界朝向 → 脚掌永远水平 (自动补偿全链含 hips 侧倾)
+  _ikQ2.copy(hipsNode.quaternion).multiply(S.upper.quaternion).multiply(S.lower.quaternion);
+  S.foot.quaternion.copy(_ikQ2.invert());
+}
+
+// ---- organic idle: φ-spaced sum-of-sines ≈ band-limited 1/f noise ----
+function n3(t, f, s) {
+  return 0.55 * Math.sin(f * t + s)
+       + 0.30 * Math.sin(f * 2.618 * t + s * 1.618 + 1.7)
+       + 0.15 * Math.sin(f * 6.854 * t + s * 2.618 + 3.1);
+}
+// 左手静息弯曲 (实测 30 根骨全存在); 右手镜像 = y/z 取反、x 不变
+const FINGER_REST = [
+  ['ThumbMetacarpal', -0.06, -0.20, 0],
+  ['ThumbProximal', 0, -0.15, 0],
+  ['ThumbDistal', 0, -0.15, 0],
+  ['IndexProximal', 0, -0.03, 0.22], ['IndexIntermediate', 0, 0, 0.28], ['IndexDistal', 0, 0, 0.16],
+  ['MiddleProximal', 0, 0, 0.26], ['MiddleIntermediate', 0, 0, 0.32], ['MiddleDistal', 0, 0, 0.18],
+  ['RingProximal', 0, 0.02, 0.30], ['RingIntermediate', 0, 0, 0.36], ['RingDistal', 0, 0, 0.20],
+  ['LittleProximal', 0, 0.05, 0.34], ['LittleIntermediate', 0, 0, 0.40], ['LittleDistal', 0, 0, 0.22],
+];
+const fingerCur = { left: 1, right: 1 };
+function applyFingers(h, ti, k, tgtL, tgtR) {
+  fingerCur.left += (tgtL - fingerCur.left) * k;
+  fingerCur.right += (tgtR - fingerCur.right) * k;
+  const wob = { left: 1 + 0.10 * n3(ti, 0.21, 12.3), right: 1 + 0.10 * n3(ti, 0.24, 7.1) };
+  for (const side of ['left', 'right']) {
+    const mir = side === 'left' ? 1 : -1;
+    const m = fingerCur[side] * wob[side];
+    for (const [bn, x, y, z] of FINGER_REST) {
+      const node = h.getNormalizedBoneNode(side + bn);
+      if (node) node.rotation.set(x * m, y * m * mir, z * m * mir);
+    }
+  }
+}
+
 const EXPRS = { neutral: '淡然', happy: '开心', angry: '生气', sad: '哀伤', relaxed: '惬意' };
 let expr = 'happy';
 let exprWeight = 0.42;
-const exprState = {}; // eased per-expression weights
-let blinkT = 2.4, blinkPhase = -1;
+
+// ===================================================== facial acting v2 ===
+// 通道 = three-vrm 归一化名 (VRM0: joy→happy, fun→relaxed, sorrow→sad,
+// A/I/U/E/O→aa/ih/ou/ee/oh)。setValue 对缺失通道静默忽略。
+const FACIAL_CHANNELS = ['happy', 'relaxed', 'angry', 'sad', 'aa', 'ih', 'ou', 'ee', 'oh'];
+const CHANNEL_CAP = { happy: 0.50, relaxed: 0.70, angry: 0.80, sad: 0.80,
+                      aa: 0.12, ih: 0.14, ou: 0.14, ee: 0.14, oh: 0.12 };
+function slowNoise(t, seed) {
+  return 0.50 * Math.sin(t * 0.37 + seed)
+       + 0.35 * Math.sin(t * 0.91 + seed * 1.71)
+       + 0.15 * Math.sin(t * 1.53 + seed * 2.93);
+}
+const EXPR_RECIPES = {
+  neutral: {
+    layers: [{ n: 'relaxed', base: 0.08, wobble: 0.040, speed: 1.0 },
+             { n: 'happy', base: 0.05, wobble: 0.030, speed: 0.7 }],
+    lidBase: 0.05, awayEvery: [6, 15], gazeDown: 0,
+  },
+  happy: {
+    layers: [{ n: 'happy', base: 0.22, wobble: 0.080, speed: 1.0 },
+             { n: 'relaxed', base: 0.30, wobble: 0.060, speed: 0.8 }],
+    lidBase: 0.0, awayEvery: [8, 18], gazeDown: 0,
+  },
+  angry: {
+    layers: [{ n: 'angry', base: 0.64, wobble: 0.070, speed: 1.25 },
+             { n: 'ih', base: 0.09, wobble: 0.020, speed: 1.25 }],
+    lidBase: 0.06, awayEvery: [5, 11], gazeDown: 0,
+  },
+  sad: {
+    layers: [{ n: 'sad', base: 0.48, wobble: 0.060, speed: 0.65 },
+             { n: 'ou', base: 0.05, wobble: 0.020, speed: 0.65 }],
+    lidBase: 0.14, awayEvery: [3.5, 8], gazeDown: 0.10,
+  },
+  relaxed: {
+    layers: [{ n: 'relaxed', base: 0.42, wobble: 0.070, speed: 0.55 },
+             { n: 'happy', base: 0.10, wobble: 0.040, speed: 0.55 }],
+    lidBase: 0.18, awayEvery: [7, 16], gazeDown: 0.03,
+  },
+};
+function activeRecipe() {
+  return EXPR_RECIPES[exprWeight < 0.05 ? 'neutral' : expr] || EXPR_RECIPES.neutral;
+}
+
+// --- 眨眼: 泊松间隔 + 非对称包络(快闭慢开) + 15% 双连眨 + 事件联动 ---
+const blinkCtl = {
+  next: 2.2, phase: -1, env: 0, dbl: false, lastEnd: -10,
+  poisson() { return THREE.MathUtils.clamp(-Math.log(1 - Math.random()) * 4.0, 1.2, 9.0); },
+  trigger(force = false) {
+    if (this.phase >= 0) return;
+    if (!force && facial.tNow - this.lastEnd < 0.45) return;
+    this.phase = 0; this.dbl = false;
+  },
+  update(t, dt) {
+    if (this.phase < 0 && t >= this.next) { this.phase = 0; this.dbl = Math.random() < 0.15; }
+    if (this.phase < 0) { this.env = 0; return; }
+    this.phase += dt / 0.34;
+    const p = this.phase;
+    if (p < 0.22) { const x = p / 0.22; this.env = x * x * (3 - 2 * x); }
+    else if (p < 0.34) this.env = 1;
+    else if (p < 1) { const x = (p - 0.34) / 0.66; this.env = Math.pow(1 - x, 2.2); }
+    else {
+      this.env = 0; this.phase = -1; this.lastEnd = t;
+      this.next = this.dbl ? t + 0.20 + Math.random() * 0.08 : t + this.poisson();
+      this.dbl = false;
+    }
+  },
+};
+
+// --- 微表情: 每 8~20s 一个 0.4~0.65s 的口部低权重脉冲 ---
+const microCtl = {
+  next: 6 + Math.random() * 8, name: null, w: 0, dur: 0.5, phase: 0, val: 0,
+  pool: ['ih', 'ou', 'ee', 'oh', 'aa'],
+  update(t, dt) {
+    if (!this.name && t >= this.next) {
+      this.name = this.pool[(Math.random() * this.pool.length) | 0];
+      this.w = 0.06 + Math.random() * 0.06;
+      if (this.name === 'aa') this.w = Math.min(this.w, 0.08);
+      this.dur = 0.40 + Math.random() * 0.25;
+      this.phase = 0;
+    }
+    if (this.name) {
+      this.phase += dt / this.dur;
+      this.val = Math.sin(Math.min(this.phase, 1) * Math.PI);
+      if (this.phase >= 1) { this.name = null; this.val = 0; this.next = t + 8 + Math.random() * 12; }
+    }
+  },
+};
+
+// --- 表情混合主控 ---
+const facial = {
+  cur: Object.fromEntries(FACIAL_CHANNELS.map((c) => [c, 0])),
+  tgt: Object.fromEntries(FACIAL_CHANNELS.map((c) => [c, 0])),
+  seeds: Object.fromEntries(FACIAL_CHANNELS.map((c, i) => [c, i * 7.13 + 1.7])),
+  tNow: 0,
+  onExpressionSwitch() { blinkCtl.trigger(true); gaze.kick(); },
+  blinkNow() { blinkCtl.trigger(true); },
+  update(em, t, dt, instant) {
+    this.tNow = t;
+    const recipe = activeRecipe();
+    const neutralMode = exprWeight < 0.05;
+    const scale = neutralMode ? 1 : THREE.MathUtils.clamp(exprWeight / 0.55, 0, 1.8);
+    const tgt = this.tgt;
+    for (const c of FACIAL_CHANNELS) tgt[c] = 0;
+    for (const L of recipe.layers) {
+      const nz = instant ? 0 : slowNoise(t * (L.speed ?? 1), this.seeds[L.n]);
+      tgt[L.n] += L.base * scale + L.wobble * Math.min(scale, 1) * nz;
+    }
+    if (!instant) { microCtl.update(t, dt); if (microCtl.name) tgt[microCtl.name] += microCtl.w * microCtl.val; }
+    const ke = instant ? 1 : 1 - Math.exp(-8 * dt);
+    for (const c of FACIAL_CHANNELS) {
+      const v = THREE.MathUtils.clamp(tgt[c], 0, CHANNEL_CAP[c]);
+      this.cur[c] += (v - this.cur[c]) * ke;
+      em.setValue(c, this.cur[c]);
+    }
+    if (!instant) blinkCtl.update(t, dt);
+    const lid = recipe.lidBase * Math.min(scale, 1);
+    const squint = Math.max(0.35, 1 - 0.45 * this.cur.happy - 0.30 * this.cur.relaxed);
+    em.setValue('blink', THREE.MathUtils.clamp(
+      lid + (1 - lid) * (instant ? 0 : blinkCtl.env) * squint, 0, 1));
+  },
+};
+
+// --- 视线 saccade 状态机 + 虚拟注视点 ---
+const gazeTarget = new THREE.Object3D();
+gazeTarget.position.set(0, 1.35, 3);
+scene.add(gazeTarget);
+const _gv = { right: new THREE.Vector3(), up: new THREE.Vector3(),
+              head: new THREE.Vector3(), base: new THREE.Vector3() };
+const gaze = {
+  mode: 'cam', nextSaccade: 1.2, returnAt: 0, nextAway: 9,
+  off: new THREE.Vector2(), offCur: new THREE.Vector2(),
+  wasFacing: true,
+  kick() { this.nextSaccade = 0; },
+  update(t, dt, facing) {
+    if (!vrm?.lookAt) return;
+    const headNode = vrm.humanoid.getNormalizedBoneNode('head');
+    if (!headNode) return;
+    headNode.getWorldPosition(_gv.head);
+    vrm.lookAt.target = gazeTarget; // 永不设 null (null 会让眼球冻在最后角度)
+    if (q.get('still')) { gazeTarget.position.copy(camera.position); return; }
+    const isFacing = Math.abs(facing) < 1.25;
+    if (isFacing !== this.wasFacing) this.wasFacing = isFacing; // 跨界眨眼取消: 交互后总看到闭眼帧
+    if (isFacing) _gv.base.copy(camera.position);
+    else {
+      _gv.base.set(_gv.head.x + Math.sin(rotY) * 3, _gv.head.y, _gv.head.z + Math.cos(rotY) * 3);
+      this.off.set(0, 0);
+    }
+    const d = Math.max(_gv.head.distanceTo(_gv.base), 0.5);
+    const recipe = activeRecipe();
+    if (isFacing && t >= this.nextSaccade) {
+      if (this.mode === 'cam' && t >= this.nextAway) {
+        this.mode = 'away';
+        const yawDeg = (Math.random() < 0.5 ? -1 : 1) * (8 + Math.random() * 12);
+        const pitDeg = (Math.random() - 0.62) * 8;
+        this.off.set(Math.tan(THREE.MathUtils.degToRad(yawDeg)) * d,
+                     Math.tan(THREE.MathUtils.degToRad(pitDeg)) * d);
+        this.returnAt = t + 0.5 + Math.random() * 0.7;
+        this.nextSaccade = this.returnAt;
+        const [a0, a1] = recipe.awayEvery;
+        this.nextAway = this.returnAt + a0 + Math.random() * (a1 - a0);
+        if (Math.abs(yawDeg) > 12 && Math.random() < 0.6) blinkCtl.trigger();
+      } else if (this.mode === 'away') {
+        this.mode = 'cam';
+        this.off.set(0, 0);
+        this.nextSaccade = t + 0.6 + Math.random() * 1.9;
+      } else {
+        const a = THREE.MathUtils.degToRad(0.6 + Math.random() * 1.6);
+        const dir = Math.random() * Math.PI * 2;
+        this.off.set(Math.cos(dir) * Math.tan(a) * d * 1.4,
+                     (Math.sin(dir) * 0.55 - 0.30) * Math.tan(a) * d);
+        this.nextSaccade = t + 0.6 + Math.random() * 1.9;
+      }
+    }
+    const ks = 1 - Math.exp(-45 * dt);
+    this.offCur.lerp(this.off, ks);
+    const dr = Math.tan(THREE.MathUtils.degToRad(0.3)) * d;
+    const dx = slowNoise(t * 2.1, 4.7) * dr;
+    const dy = slowNoise(t * 1.7, 9.2) * dr * 0.7;
+    const down = -Math.tan(recipe.gazeDown || 0) * d;
+    _gv.right.setFromMatrixColumn(camera.matrixWorld, 0);
+    _gv.up.setFromMatrixColumn(camera.matrixWorld, 1);
+    gazeTarget.position.copy(_gv.base)
+      .addScaledVector(_gv.right, this.offCur.x + dx)
+      .addScaledVector(_gv.up, this.offCur.y + dy + down);
+  },
+};
+// =================================================== end facial acting ====
 
 function animateVRM(t, dt) {
   if (!vrm) return;
   const h = vrm.humanoid;
-  const k = (q.get('still') || forceInstant) ? 1 : 1 - Math.exp(-6 * dt);
+  const k = (q.get('still') || forceInstant) ? 1 : 1 - Math.exp(-10 * dt);
   const target = POSES[poseName];
   for (const b of POSE_BONES) {
     const node = h.getNormalizedBoneNode(b);
@@ -402,15 +730,47 @@ function animateVRM(t, dt) {
     cur.z += (tz - cur.z) * k;
     node.rotation.set(cur.x, cur.y, cur.z);
   }
-  const chest = h.getNormalizedBoneNode('chest');
-  if (chest) chest.rotation.x += Math.sin(t * 1.4) * 0.012;
+  // ---------------- layered organic idle ----------------
+  const ti = q.get('still') ? 2.0 : t; // still 截图冻结在固定相位, 确定性
+  const fp = target.fingers || [1, 1];
+  applyFingers(h, ti, k, fp[0], fp[1]);
+  const add = (name, x, y, z) => {
+    const node = h.getNormalizedBoneNode(name);
+    if (node) { node.rotation.x += x; node.rotation.y += y; node.rotation.z += z; }
+  };
+  // L1 呼吸 0.215Hz: 呼吸率漂移±1%, 吸快呼慢; neck 反补稳视线; 肩随吸气微抬
+  const bp = 1.35 * ti + 0.35 * Math.sin(0.043 * ti);
+  const b = Math.pow(0.5 + 0.5 * Math.sin(bp), 1.4);
+  add('chest', 0.018 * (b - 0.4), 0, 0);
+  add('upperChest', 0.010 * (b - 0.4), 0, 0);
+  add('spine', 0.006 * (b - 0.4), 0, 0);
+  add('neck', -0.009 * (b - 0.4), 0, 0);
+  add('leftShoulder', 0, 0, -0.012 * b);
+  add('rightShoulder', 0, 0, 0.012 * b);
+  // L2 重心转移 contrapposto: 髋横移+髋滚 → 胸反滚 → 头再反补(眼睛保持水平)
+  const w = n3(ti, 0.10, 0.0);
+  const wy = n3(ti, 0.07, 9.2);
   const hips = h.getNormalizedBoneNode('hips');
   if (hips && hipsRest) {
-    hips.rotation.z += Math.sin(t * 0.45) * 0.015;
-    hips.position.set(hipsRest.x + Math.sin(t * 0.45) * 0.008, hipsRest.y + Math.sin(t * 1.4) * 0.004, hipsRest.z);
+    hips.rotation.z += 0.020 * w;
+    hips.rotation.y += 0.014 * wy;
+    // 纯下沉式呼吸: rest(直腿)为上限, 6.0~8.5mm, 与胸呼吸锁相 — 腿部 IK 弯膝消化,
+    // 双脚永远钉地 (旧 ±4mm 正弦上浮是"悬浮感"的直接来源, 已废)
+    const sink = 0.006 + 0.0025 * (1 - b);
+    hips.position.set(hipsRest.x + 0.011 * w, hipsRest.y - sink, hipsRest.z);
   }
-  const head = h.getNormalizedBoneNode('head');
-  if (head) head.rotation.z += Math.sin(t * 0.7) * 0.012;
+  add('chest', 0, -0.009 * wy, -0.013 * w);
+  add('neck', 0, 0, -0.004 * w);
+  add('head', 0, 0, -0.005 * w);
+  // L3 姿态微噪声: 每骨骼独立频率/seed, 头部(注意力)最大
+  add('spine', 0, 0.008 * n3(ti, 0.23, 2.7), 0.005 * n3(ti, 0.19, 5.1));
+  add('chest', 0.006 * n3(ti, 0.26, 7.7), 0.007 * n3(ti, 0.17, 7.9), 0);
+  add('neck', 0.008 * n3(ti, 0.27, 8.4), 0.012 * n3(ti, 0.31, 3.9), 0.005 * n3(ti, 0.33, 0.8));
+  add('head', 0.010 * n3(ti, 0.37, 6.6), 0.022 * n3(ti, 0.13, 1.3), 0.008 * n3(ti, 0.29, 4.4));
+  add('leftUpperArm', 0.010 * n3(ti, 0.14, 3.3), 0, 0.015 * n3(ti, 0.15, 2.2));
+  add('rightUpperArm', 0.010 * n3(ti, 0.16, 8.8), 0, -0.015 * n3(ti, 0.15, 5.8));
+  add('leftHand', 0, 0, 0.02 * n3(ti, 0.19, 6.1));
+  add('rightHand', 0, 0, -0.02 * n3(ti, 0.21, 1.9));
 
   // gesture overlay: eased in-out, additive on top of pose + idle
   if (!q.get('still')) {
@@ -426,25 +786,12 @@ function animateVRM(t, dt) {
     }
   }
 
+  // legs: IK pins both ankles to the floor whatever the hips did (must run
+  // before vrm.update copies normalized→raw)
+  if (legIK.ready && hips) { solveLeg(legIK.left, hips); solveLeg(legIK.right, hips); }
+
   const em = vrm.expressionManager;
-  if (em) {
-    const ke = (q.get('still') || forceInstant) ? 1 : 1 - Math.exp(-8 * dt);
-    for (const name of Object.keys(EXPRS)) {
-      if (name === 'neutral') continue;
-      const tgt = name === expr ? exprWeight : 0;
-      const cur2 = exprState[name] ?? 0;
-      exprState[name] = cur2 + (tgt - cur2) * ke;
-      em.setValue(name, exprState[name]);
-    }
-    if (blinkPhase < 0 && t > blinkT && !q.get('still')) blinkPhase = 0;
-    if (blinkPhase >= 0) {
-      blinkPhase += dt / 0.22;
-      const v = blinkPhase < 0.45 ? blinkPhase / 0.45 : Math.max(0, 1 - (blinkPhase - 0.45) / 0.55);
-      // a strong smile already squints — don't double-close the lids
-      em.setValue('blink', v * (1 - 0.45 * (exprState.happy || 0)));
-      if (blinkPhase >= 1) { blinkPhase = -1; em.setValue('blink', 0); blinkT = t + 1.8 + Math.random() * 3.4; }
-    }
-  }
+  if (em) facial.update(em, t, dt, !!q.get('still') || forceInstant);
   vrm.update(dt);
 }
 
@@ -459,7 +806,20 @@ function snapshotTex(tex) {
   c.getContext('2d').drawImage(tex.image, 0, 0);
   return c;
 }
-function applyDye(groupName) {
+const dyePending = new Set();
+let dyeScheduled = false;
+function applyDye(groupName) { // rAF-coalesced: N clicks per frame = 1 re-render
+  dyePending.add(groupName);
+  if (dyeScheduled) return;
+  dyeScheduled = true;
+  requestAnimationFrame(() => {
+    dyeScheduled = false;
+    const batch = [...dyePending];
+    dyePending.clear();
+    for (const g of batch) applyDyeNow(g);
+  });
+}
+function applyDyeNow(groupName) {
   const deg = dyes[groupName];
   for (const m of matGroups[groupName]) {
     let cache = dyeCache.get(m);
@@ -483,7 +843,7 @@ function applyDye(groupName) {
 }
 
 // ------------------------------------------------------------ turntable ---
-let rotY = q.get('still') ? 0 : 0.3, rotVel = 0, camPitch = 0.12, dist = 2.7;
+let rotY = q.get('still') ? 0 : 0.3, rotVel = 0, camPitch = 0.15, dist = 2.9;
 let autoRotate = false, dragging = false, lastX = 0, lastY = 0;
 if (q.get('closeup')) { dist = 0.9; camPitch = 0.0; }
 const dom = renderer.domElement;
@@ -516,7 +876,8 @@ window.addEventListener('pointerup', (e) => {
   if (raycaster.intersectObject(vrm.scene, true).length) {
     gesture = GESTURE_NOTICE;
     gesturePhase = 0;
-    blinkPhase = 0;
+    facial.blinkNow();
+    gaze.kick();
     sfx.ok();
   }
 });
@@ -644,6 +1005,7 @@ toggle(panes.light, '镜面地台', () => quality.mirror, (v) => { quality.mirro
 segmented(panes.act, '表情', EXPRS, () => (exprWeight < 0.05 ? 'neutral' : expr), (v) => {
   if (v === 'neutral') exprWeight = 0;
   else { expr = v; if (exprWeight < 0.05) exprWeight = 0.55; }
+  facial.onExpressionSwitch();
 });
 slider(panes.act, '表情强度', () => exprWeight, (v) => { exprWeight = v; }, 0, 1);
 segmented(panes.act, '姿势', Object.fromEntries(Object.entries(POSES).map(([kk, v]) => [kk, v.label])), () => poseName, setPose);
@@ -705,6 +1067,7 @@ $('#rand').addEventListener('click', () => {
   setPose(pick(Object.keys(POSES)));
   expr = pick(Object.keys(EXPRS).filter((e2) => e2 !== 'neutral'));
   exprWeight = 0.3 + Math.random() * 0.7;
+  facial.onExpressionSwitch();
   for (const g of ['hair', 'eyes', 'cloth']) { dyes[g] = Math.floor(Math.random() * 360); applyDye(g); }
   ui.sync();
 });
@@ -782,16 +1145,17 @@ renderer.setAnimationLoop(() => {
     targetY + Math.sin(camPitch) * dist + Math.sin(t * 0.34) * 0.007,
     Math.cos(camPitch) * dist);
   camera.lookAt(0, targetY, 0);
-  // eyes follow the camera only while the face could plausibly see it
+  // eyes: saccade 导演接管 (facing 门在 gaze 内部处理, 永不置 null)
   if (vrm?.lookAt) {
     const rel = ((rotY % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
     const facing = rel > Math.PI ? rel - Math.PI * 2 : rel;
-    vrm.lookAt.target = Math.abs(facing) < 1.25 ? camera : null;
+    gaze.update(t, dt, facing);
   }
   emblem.material.opacity = 0.34 + Math.sin(t * 1.1) * 0.05;
   beams.rotation.z = Math.sin(t * 0.09) * 0.05;
   updatePetals(t, dt);
   animateVRM(t, dt);
+  updateContactBlobs();
   composer.render();
 });
 
@@ -802,7 +1166,7 @@ window.__a2 = {
   camera, scene, renderer,
   applyPreset, setPose, loadChar, encodeState, applyState,
   cardDataURL: () => makeCard().toDataURL('image/png'),
-  setExpr(name, w) { expr = name; exprWeight = w ?? 0.6; },
+  setExpr(name, w) { expr = name; exprWeight = w ?? 0.6; facial.onExpressionSwitch(); },
   setDye(g2, v) { dyes[g2] = v; applyDye(g2); },
   get preset() { return preset; },
   get pose() { return poseName; },

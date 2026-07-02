@@ -292,11 +292,13 @@ loader.register((p) => new VRMLoaderPlugin(p));
 const loadEl = document.getElementById('loading');
 let firstLoad = true;
 let forceInstant = false;
+let loadGen = 0;
 const pct = $('#load-pct');
 
 async function loadChar(id) {
   if (!CHARS[id]) id = 'shino';
   charId = id;
+  const gen = ++loadGen; // stale requests must never land on stage
   loadEl.classList.toggle('soft', !firstLoad); // switches dim, only boot blanks
   loadEl.style.opacity = '1';
   window.__a2.ready = false;
@@ -314,6 +316,8 @@ async function loadChar(id) {
     });
     vrmCache[id] = v;
   }
+  if (gen !== loadGen) return; // superseded by a newer click
+  if (vrm) charGroup.remove(vrm.scene);
   vrm = v;
   matGroups.hair = []; matGroups.cloth = []; matGroups.eyes = [];
   vrm.scene.traverse((o) => {
@@ -661,10 +665,13 @@ let charName = '紗夜';
 }
 toggle(panes.finish, '自动旋转', () => autoRotate, (v) => { autoRotate = v; });
 action(panes.finish, '📷 拍照（当前构图）', () => {
+  camera.clearViewOffset();
   composer.render();
+  const url = renderer.domElement.toDataURL('image/png');
+  updateViewOffset();
   const a = document.createElement('a');
   a.download = `${charName}-photo.png`;
-  a.href = renderer.domElement.toDataURL('image/png');
+  a.href = url;
   a.click();
   toast('照片已保存');
 });

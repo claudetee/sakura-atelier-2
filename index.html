@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1122">
+<meta property="og:title" content="桜の工房・弐 — Sakura Atelier II">
+<meta property="og:description" content="VRM anime dressing room — 光影 · 表情 · 姿势 · 色彩 · 角色卡">
+<title>桜の工房・弐 — Sakura Atelier II</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --gold: #d9b25e;
+    --gold-dim: rgba(217, 178, 94, 0.35);
+    --ink: #f2ead9;
+    --panel: rgba(20, 12, 26, 0.80);
+  }
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #120a18; height: 100%; }
+  #viewport { position: fixed; inset: 0; }
+  #viewport canvas { display: block; }
+  body, button, input { font-family: ui-rounded, "SF Pro Rounded", "PingFang SC", "Hiragino Sans", -apple-system, system-ui, sans-serif; }
+
+  #brand {
+    position: fixed; top: 26px; left: 30px; z-index: 10; color: var(--ink);
+    pointer-events: none; text-shadow: 0 2px 12px rgba(0,0,0,0.7);
+  }
+  #brand h1 { margin: 0; font: 500 30px/1.1 Georgia, "Hiragino Mincho ProN", serif; letter-spacing: 0.04em; }
+  #brand small { display: block; margin-top: 5px; color: var(--gold); font-size: 11px; letter-spacing: 0.30em; }
+  #hint {
+    position: fixed; left: 30px; bottom: 22px; z-index: 10;
+    color: rgba(242, 234, 217, 0.5); font-size: 11.5px; letter-spacing: 0.04em;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8); pointer-events: none;
+  }
+
+  #panel {
+    position: fixed; top: 18px; right: 18px; bottom: 18px; width: 352px; z-index: 20;
+    display: flex; flex-direction: column;
+    border-radius: 18px; border: 1px solid var(--gold-dim);
+    background: var(--panel); backdrop-filter: blur(22px) saturate(1.2);
+    box-shadow: 0 24px 80px rgba(0,0,0,0.5), inset 0 1px rgba(255,255,255,0.05);
+    overflow: hidden;
+  }
+  #tabs { display: flex; gap: 4px; padding: 12px 12px 0; border-bottom: 1px solid rgba(217,178,94,0.18); }
+  #tabs button {
+    flex: 1; padding: 10px 4px 12px; background: none; border: none; cursor: pointer;
+    color: rgba(242,234,217,0.55); font-size: 12.5px; font-weight: 600;
+    border-bottom: 2px solid transparent; transition: color .2s, border-color .2s;
+  }
+  #tabs button.on { color: var(--gold); border-bottom-color: var(--gold); }
+  #controls { flex: 1; overflow-y: auto; padding: 16px 18px; scrollbar-width: thin; }
+  #controls::-webkit-scrollbar { width: 4px; }
+  #controls::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 2px; }
+
+  .row { display: flex; align-items: center; gap: 12px; margin: 13px 0; }
+  .row.col { flex-direction: column; align-items: stretch; gap: 8px; }
+  .row label { color: rgba(242,234,217,0.85); font-size: 12.5px; min-width: 66px; letter-spacing: 0.05em; }
+  input[type="range"] {
+    flex: 1; appearance: none; height: 3px; border-radius: 2px;
+    background: linear-gradient(90deg, rgba(217,178,94,0.55), rgba(217,178,94,0.2)); outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none; width: 15px; height: 15px; border-radius: 50%;
+    background: #f4e4bc; border: 2px solid var(--gold);
+    box-shadow: 0 0 8px rgba(217,178,94,0.5); cursor: pointer;
+  }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button {
+    padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 12px;
+    color: rgba(242,234,217,0.7); background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(217,178,94,0.2); transition: all .15s;
+  }
+  .seg button.on { color: #1c1122; background: var(--gold); border-color: var(--gold); font-weight: 700; }
+  .tog {
+    margin-left: auto; padding: 5px 14px; border-radius: 999px; cursor: pointer; font-size: 11px;
+    color: rgba(242,234,217,0.6); background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(217,178,94,0.25); font-weight: 700; letter-spacing: 0.08em;
+  }
+  .tog.on { color: #1c1122; background: var(--gold); }
+  input.name {
+    flex: 1; padding: 8px 12px; border-radius: 10px; font-size: 14px;
+    color: var(--ink); background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(217,178,94,0.25); outline: none;
+  }
+  .hueline { flex: 1; height: 10px; border-radius: 6px; appearance: none; outline: none; }
+  .hueline::-webkit-slider-thumb {
+    appearance: none; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; border: 2px solid var(--gold); cursor: pointer;
+  }
+
+  #footer { display: flex; gap: 10px; padding: 14px 16px; border-top: 1px solid rgba(217,178,94,0.18); }
+  #rand {
+    padding: 12px 16px; border-radius: 12px; cursor: pointer; font-size: 16px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(217,178,94,0.3); color: var(--gold);
+  }
+  #next {
+    flex: 1; padding: 12px; border-radius: 12px; cursor: pointer;
+    font-size: 14px; font-weight: 700; letter-spacing: 0.06em;
+    color: #241528; background: linear-gradient(180deg, #ecd39a, #d9b25e);
+    border: 1px solid #b8934a; box-shadow: 0 6px 22px rgba(217,178,94,0.28);
+  }
+  #next:hover { filter: brightness(1.07); }
+
+  #loading {
+    position: fixed; inset: 0; z-index: 40; display: flex;
+    flex-direction: column; gap: 14px; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 60%, #2a1630 0%, #100a16 70%);
+    color: #c4a8cc; font-size: 14px; transition: opacity .8s; pointer-events: none;
+  }
+  #loading::before {
+    content: '桜の工房・弐';
+    font: 500 44px/1 Georgia, "Hiragino Mincho ProN", serif;
+    letter-spacing: 0.08em; color: #f4e6ee;
+    text-shadow: 0 0 40px rgba(232, 150, 190, 0.35);
+  }
+  #loading::after {
+    content: ''; width: 148px; height: 2px; border-radius: 2px;
+    background: linear-gradient(90deg, transparent, var(--gold), transparent);
+    background-size: 200% 100%; animation: sheen 1.6s linear infinite;
+  }
+  @keyframes sheen { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
+    z-index: 30; padding: 10px 18px; border-radius: 999px;
+    color: rgba(255,240,228,0.92); background: rgba(30,14,34,0.8);
+    border: 1px solid var(--gold-dim); backdrop-filter: blur(12px);
+    font-size: 13px; white-space: nowrap; opacity: 0; transition: opacity .4s;
+    pointer-events: none;
+  }
+  #toast.visible { opacity: 1; }
+  @media (max-width: 760px) {
+    #panel { left: 10px; right: 10px; top: auto; bottom: 10px; width: auto; height: 46vh; }
+    #brand h1 { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+<div id="loading"><span id="load-pct">召喚中…</span></div>
+<div id="viewport"></div>
+<div id="brand">
+  <h1>桜の工房<span style="font-size:0.6em">・弐</span></h1>
+  <small>SAKURA ATELIER II · VRM DRESSING ROOM</small>
+</div>
+<div id="hint">拖拽旋转 · 滚轮缩放 · 双击聚焦面部</div>
+<div id="toast"></div>
+<aside id="panel">
+  <nav id="tabs"></nav>
+  <div id="controls"></div>
+  <div id="footer">
+    <button id="rand" title="随机">🎲</button>
+    <button id="next">下一步 →</button>
+  </div>
+</aside>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.4/lib/three-vrm.module.min.js"
+  }
+}
+</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
